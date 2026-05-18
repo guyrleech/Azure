@@ -11,6 +11,8 @@
     2026/04/10  Guy Leech  Added AD lookup, set width of console if run from explorer
     2026/04/15  Guy Leech  Added dsregcmd /status. Added AZ metadata
     2026/05/05  Guy Leech  Added count of stored credentials
+    2026/05/17  Guy Leech  Added disk space
+    2026/05/18  Guy Leech  Enhanced AZ metadata output
 #>
 
 [string]$runFromExplorerRegex = '-ExecutionPolicy\b|-File\b'
@@ -66,7 +68,9 @@ $ProgressPreference = $oldProgressPreference
 "CPUs = {0}, memory = {1:N2} GB" -f $info.CsNumberOfLogicalProcessors , ($info.OsTotalVisibleMemorySize / 1MB)
 ''
 'Video Controller:'
-$graphics
+($graphics|Out-String).TrimEnd()
+
+(Get-Volume | Where-Object Size -gt 1GB | Select-Object -Property DriveLetter,FileSystemLabel,@{n='Size GB';e={[int]($_.Size / 1GB)}},@{n='Remaining GB';e={[int]($_.SizeRemaining / 1GB)}}|ft -auto|Out-String).TrimEnd()
 ''
 "Profile Disk: $(((Get-disk).location | where { $_ -notmatch '^(PCI Slot|Integrated)' } | Select @{n='Path';e={$_}},@{n='Size GB';e={$script:pd=dir $_ -EA 0;'{0:N2}' -f ($script:pd.Length / 1GB)}},@{n='Created';e={$script:pd.CreationTime}},@{n='Modified';e={$script:pd.LastWriteTime}}|ft -auto|Out-String).TrimEnd())"
 "Profile size limit: $((Get-ItemPropertyValue -Path "hklm:\SOFTWARE\FSLogix\Profiles" -Name SizeInMBs)/1024) GB"
@@ -92,8 +96,8 @@ catch
 "Domain             : $(([adsi]"LDAP://RootDSE").defaultNamingContext) , logon server $Env:LOGONSERVER"
 
 "dsregcmd /status"
-dsregcmd /status|Select-String 'Joined : | Tenant.*: |Domain|Executing Account Name : '|Out-String
-
+dsregcmd /status|Select-String 'Joined : | Tenant.*: |Domain|Executing Account Name : '
+''
 quser.exe
 ''
 if( Test-Path -Path "$env:ProgramFiles\itopia\Scripts\Labs-BuildFunctions.psm1" -PathType Leaf )
@@ -127,15 +131,19 @@ else ## see if Azure
     Write-Verbose -Message "Using api version $apiversion"
     $metadata = $null
     ## https://learn.microsoft.com/en-us/azure/virtual-machines/windows/instance-metadata-service?tabs=windows
-    [string]$uri = "http://$ImdsServer/metadata/instance?api-version=$apiversion"
+    [string]$uri = "http://$ImdsServer/metadata/instance/compute?api-version=$apiversion"
     try
     {
         $metadata = Invoke-RestMethod -Headers $headers -URI $uri -WebSession $WebSession
         'Azure metadata:'
-            ($metadata|Select-Object -ExpandProperty Compute|Select-Object -Property Resource*,SubscriptionId,vmSize|Format-List -Property *|Out-String).TrimEnd()
+            ($metadata|Select-Object -Property Resource*,SubscriptionId,vmSize|Format-List -Property *|Out-String).TrimEnd()
+        ''
+        'Azure image:'
+            ($metadata.storageProfile.imageReference.psobject.Properties|Where-Object { -not [string]::IsNullOrEmpty( $_.value ) }|sort name|select name,value|Out-String).TrimEnd()
+            ($metadata.storageprofile.osdisk|Select-Object -Property manageddisk|Format-List -Property *|Out-String).TrimEnd()
         ''
         'Azure tags:'
-         ($metadata.compute.tagsList|select Name,Value|sort name|Format-Table -AutoSize|Out-String).TrimEnd()
+            ($metadata.tagsList|select Name,Value|sort name|Format-Table -AutoSize|Out-String).TrimEnd()
     }
     catch
     {
